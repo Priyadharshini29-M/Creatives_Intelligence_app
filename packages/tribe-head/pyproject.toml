@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tribe-head"
+version = "0.1.0"
+description = "Trainable multi-task head mapping TRIBE v2 cortical-activation predictions to product analytics"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.5.1,<2.7",
+    "numpy",
+]

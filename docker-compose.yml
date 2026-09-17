@@ -1,0 +1,80 @@
+name: video-intelligence
+
+services:
+  # No longer the app's primary datastore as of 2026-09-11 — the app now
+  # runs against Supabase Postgres (see apps/api/.env's DATABASE_URL).
+  # Left running/defined here as a local rollback option and because the
+  # original MySQL data is still in this container's volume, not deleted.
+  mysql:
+    image: mysql:8.4
+    container_name: vip-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: vip_root_password
+      MYSQL_USER: vip
+      MYSQL_PASSWORD: vip_dev_password
+      MYSQL_DATABASE: video_intelligence
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+      # Grants vip the global rights Prisma Migrate needs (shadow database)
+      - ./docker/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uvip", "-pvip_dev_password"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: vip-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # S3-compatible object storage for local development.
+  # Production uses AWS S3 with the same client code (endpoint swap via env).
+  minio:
+    image: minio/minio:latest
+    container_name: vip-minio
+    environment:
+      MINIO_ROOT_USER: vip_minio
+      MINIO_ROOT_PASSWORD: vip_minio_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: server /data --console-address ":9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot job: create the videos bucket on startup
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 vip_minio vip_minio_password &&
+      mc mb --ignore-existing local/videos &&
+      mc mb --ignore-existing local/frames &&
+      mc mb --ignore-existing local/audio &&
+      exit 0
+      "
+
+volumes:
+  mysqldata:
+  redisdata:
+  miniodata:

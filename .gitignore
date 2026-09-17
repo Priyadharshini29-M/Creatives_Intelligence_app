@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Builds
+.next/
+dist/
+build/
+out/
+
+# Env — never commit secrets
+.env
+.env.local
+.env*.local
+
+# Prisma
+packages/database/generated/
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+
+# Storage volumes (local dev)
+.docker-data/
+
+# AI model caches
+apps/ai/.cache/
+whisper-models/
+apps/ai/models/

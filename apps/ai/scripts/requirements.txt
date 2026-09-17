@@ -1,0 +1,4 @@
+# Deps for train_tribe_head.py only — not needed by the FastAPI service,
+# which never runs TRIBE v2 or its head locally (both run on Modal).
+modal>=0.72
+-e ../../../packages/tribe-head

@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "rules",
+			"path": "../Creative-Intelligence/rules"
+		},
+		{
+			"name": "Sentimental_Video_Analysis",
+			"path": "."
+		}
+	],
+	"settings": {}
+}

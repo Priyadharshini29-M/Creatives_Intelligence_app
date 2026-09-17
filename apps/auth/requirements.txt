@@ -1,0 +1,10 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.10
+pydantic-settings>=2.8
+pyjwt>=2.9
+# Needed for ES256 (asymmetric) JWT verification — this project's Supabase
+# JWT Signing Keys are ECC P-256, not the legacy HS256 shared secret (see
+# verify()'s docstring in routers/auth.py). PyJWT's PyJWKClient requires
+# this for any non-HMAC algorithm.
+cryptography>=42

@@ -1,0 +1,9 @@
+pyproject.toml
+tribe_head/__init__.py
+tribe_head/model.py
+tribe_head/postprocess.py
+tribe_head.egg-info/PKG-INFO
+tribe_head.egg-info/SOURCES.txt
+tribe_head.egg-info/dependency_links.txt
+tribe_head.egg-info/requires.txt
+tribe_head.egg-info/top_level.txt

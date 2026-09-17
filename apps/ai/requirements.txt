@@ -1,0 +1,35 @@
+# Phases 1–3 — service skeleton, media probing, frame extraction,
+# transcription.
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.10
+pydantic-settings>=2.8
+httpx>=0.27
+numpy>=1.26
+# <5: OpenCV 5 removed cv2.CascadeClassifier, which the frame step's face
+# detection depends on.
+opencv-python-headless>=4.10,<5
+faster-whisper>=1.1
+
+# Phase 4 — TRIBE v2 client. TRIBE v2 itself (torch/transformers/etc.) runs
+# only inside Modal (see modal_service/); this service just calls it.
+modal>=0.72
+
+# Creative Intelligence pipeline — parallel analyzers.
+# OCR module: shells out to a real Tesseract install (see .env.example's
+# TESSERACT_BIN), this just wraps the CLI.
+pytesseract>=0.3.10
+pillow>=10.4
+# Gemini Vision (scene.json) + Gemini sales engine. google-generativeai is
+# EOL (no more updates/bug fixes per its own deprecation notice) — this is
+# Google's current unified SDK.
+google-genai>=1.0
+# Subject/object detector: real YOLOv8n (COCO 80-class), replacing the
+# earlier Haar-cascade-only face detector — see subject/detector.py's module
+# docstring. Pulls in torch/torchvision (CPU) as transitive deps. NOTE: a
+# bare `pip install ultralytics` on a fresh venv will pull opencv-python 5.x
+# as a transitive dep, which violates the opencv-python-headless<5 pin above
+# and breaks cv2.CascadeClassifier (frame face-count) — install/upgrade
+# opencv-python-headless (or the pin above) *after* ultralytics if setting
+# up a venv from scratch, exactly as this comment's ordering implies.
+ultralytics>=8.4

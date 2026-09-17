@@ -1,0 +1,600 @@
+// AI Video Performance Intelligence Platform — core schema
+// One source of truth shared by the NestJS API (and read by the FastAPI
+// service through the API, never directly).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Migrated from MySQL 8.4 (Docker) to Supabase Postgres (2026-09-11,
+// explicit user direction — supersedes the earlier "MySQL, not Postgres"
+// decision from 2026-07-14, see dev-environment-quirks.md). @db.Text is the
+// only native-type attribute this schema uses and is valid on both
+// connectors, so the schema itself needed no other changes — the one real
+// behavioral difference is videos.service.ts's title search (MySQL's
+// default utf8mb4 collation was case-insensitive for free; Postgres's
+// `contains` isn't, so that filter needed `mode: 'insensitive'` added back).
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// Identity & Teams
+// ─────────────────────────────────────────────
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model User {
+  id         String   @id @default(cuid())
+  // Supabase auth.users.id (a uuid) — this table used to mirror Clerk's
+  // user id under the name `clerkId`; renamed on the switch to Supabase
+  // Auth. Same role: the one column that ties a platform user back to
+  // whichever identity provider issued their session.
+  supabaseId String   @unique
+  email      String   @unique
+  firstName  String?
+  lastName   String?
+  avatarUrl  String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  memberships    TeamMember[]
+  videos         Video[]        @relation("VideoUploader")
+  approvedVideos Video[]        @relation("VideoApprovedBy")
+  notifications  Notification[]
+  chatSessions   ChatSession[]
+
+  @@index([supabaseId])
+}
+
+model Team {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  niche     String? // merchant niche, used by the AI strategist
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members       TeamMember[]
+  videos        Video[]
+  folders       Folder[]
+  tags          Tag[]
+  variantGroups VariantGroup[]
+  subscription  Subscription?
+}
+
+model TeamMember {
+  id       String   @id @default(cuid())
+  role     UserRole @default(MEMBER)
+  joinedAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId String
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
+  @@index([teamId])
+}
+
+// ─────────────────────────────────────────────
+// Content Library
+// ─────────────────────────────────────────────
+
+enum VideoStatus {
+  UPLOADING
+  UPLOADED
+  PROCESSING
+  ANALYZED
+  FAILED
+}
+
+enum Platform {
+  TIKTOK
+  INSTAGRAM_REELS
+  YOUTUBE_SHORTS
+  FACEBOOK_REELS
+  SNAPCHAT
+  OTHER
+}
+
+// What kind of creative asset this row represents. Video is the default and
+// the only type that gets frame-extraction/transcription; Image skips both
+// (a single synthetic frame stands in); Audio skips frame-extraction/vision
+// analyzers entirely (no visual signal) but still gets transcription.
+enum MediaType {
+  VIDEO
+  IMAGE
+  AUDIO
+}
+
+// Approval Desk reviewer decision — independent of VideoStatus (which tracks
+// pipeline progress, not human sign-off).
+enum ApprovalStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REVISE
+  REJECTED
+}
+
+model Folder {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  teamId   String
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  parentId String?
+  parent   Folder?  @relation("FolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children Folder[] @relation("FolderTree")
+  videos   Video[]
+
+  @@index([teamId])
+}
+
+model Tag {
+  id    String @id @default(cuid())
+  name  String
+  color String @default("#6366f1")
+
+  teamId String
+  team   Team       @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  videos VideoTag[]
+
+  @@unique([teamId, name])
+}
+
+model VideoTag {
+  videoId String
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  tagId   String
+  tag     Tag    @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([videoId, tagId])
+}
+
+// A user-created group of videos that are variations of the same underlying
+// content (e.g. different hooks/edits of one ad), uploaded specifically to be
+// compared side by side. Grouping is always explicit — never inferred from
+// filenames — so comparisons are only ever drawn between videos the user
+// intentionally linked.
+model VariantGroup {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  teamId String
+  team   Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  videos Video[]
+
+  @@index([teamId])
+}
+
+model Video {
+  id             String      @id @default(cuid())
+  title          String
+  description    String?     @db.Text
+  status         VideoStatus @default(UPLOADING)
+  targetPlatform Platform    @default(TIKTOK)
+  mediaType      MediaType   @default(VIDEO)
+
+  // Object storage
+  storageKey   String  @unique // s3 key of the source file
+  thumbnailKey String?
+
+  // Approval Desk reviewer decision (separate from `status`, which tracks
+  // pipeline progress, not human sign-off).
+  approvalStatus ApprovalStatus @default(PENDING)
+  approvalNotes  String?        @db.Text
+  approvedAt     DateTime?
+  approvedById   String?
+  approvedBy     User?          @relation("VideoApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  // Technical metadata (populated after probe)
+  originalFilename String
+  mimeType         String
+  sizeBytes        BigInt
+  durationSec      Float?
+  width            Int?
+  height           Int?
+  fps              Float?
+  codec            String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  teamId     String
+  team       Team    @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  uploaderId String
+  uploader   User    @relation("VideoUploader", fields: [uploaderId], references: [id])
+  folderId   String?
+  folder     Folder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  // Variant comparison: which test group this upload belongs to (if any) and
+  // its label within that group (e.g. "Variant A", "Hook v2").
+  variantGroupId String?
+  variantGroup   VariantGroup? @relation(fields: [variantGroupId], references: [id], onDelete: SetNull)
+  variantLabel   String?
+
+  tags             VideoTag[]
+  frames           Frame[]
+  transcript       Transcript?
+  analytics        VideoAnalytics?
+  predictions      Prediction[]
+  recommendations  Recommendation[]
+  jobs             ProcessingJob[]
+  outcome          VideoOutcome?
+  copyQualityCheck CopyQualityCheck?
+
+  @@index([teamId, status])
+  @@index([teamId, createdAt])
+}
+
+// ─────────────────────────────────────────────
+// Pipeline artifacts
+// ─────────────────────────────────────────────
+
+model Frame {
+  id           String  @id @default(cuid())
+  index        Int // sequential frame index within the extraction set
+  timestampSec Float
+  storageKey   String
+  isSceneStart Boolean @default(false)
+
+  // Visual signals (populated by the vision step)
+  brightness    Float?
+  dominantColor String?
+  motionScore   Float?
+  faceCount     Int?
+  hasText       Boolean @default(false)
+  hasProduct    Boolean @default(false)
+  labels        Json? // raw detector output
+
+  videoId String
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([videoId, index])
+  @@index([videoId, timestampSec])
+}
+
+model Transcript {
+  id            String   @id @default(cuid())
+  language      String?
+  fullText      String   @db.Text
+  wordCount     Int
+  // Extracted intelligence
+  ctaPhrases    Json? // [{ text, startSec, endSec }]
+  keywords      Json? // emotional keywords with weights
+  // Audio energy/spike analysis (see apps/ai/app/services/audio_spikes.py):
+  // { timeline: [{timestampSec, energy}], spikeCount, spikeRatePer10s,
+  //   avgEnergy, spikeScore }. Null for videos with no audio track.
+  audioAnalysis Json?
+  createdAt     DateTime @default(now())
+
+  videoId  String              @unique
+  video    Video               @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  segments TranscriptSegment[]
+}
+
+model TranscriptSegment {
+  id         String  @id @default(cuid())
+  index      Int
+  startSec   Float
+  endSec     Float
+  text       String  @db.Text
+  confidence Float?
+  emotion    String? // per-segment emotion label
+
+  transcriptId String
+  transcript   Transcript @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+
+  @@unique([transcriptId, index])
+}
+
+// ─────────────────────────────────────────────
+// Analytics, Predictions, Recommendations
+// ─────────────────────────────────────────────
+
+model VideoAnalytics {
+  id String @id @default(cuid())
+
+  // False whenever the TRIBE head was still on random init weights at
+  // analysis time (no trained weights uploaded) — see
+  // packages/tribe-head/tribe_head/postprocess.py's `calibrated` flag.
+  // Scores/suggestions derived from an uncalibrated pass must be flagged
+  // as preliminary rather than presented as reliable.
+  calibrated Boolean @default(false)
+
+  // Tribe V2 behavioral intelligence output
+  emotionalMap      Json? // timeline of emotion intensities
+  audienceSegments  Json? // segment → affinity
+  purchaseIntent    Float?
+  scrollProbability Float?
+  attentionCurve    Json? // predicted attention over time
+
+  // Watch-time predictions derived from the retention survival curve
+  hookRate       Float? // share of viewers predicted to stay past the first 3s
+  holdRate       Float? // share predicted to watch to the end
+  avgPlayTimeSec Float? // expected watch time in seconds
+
+  // Full analysis payload from the AI service; later pipeline steps
+  // (prediction, recommendation) read from this instead of re-calling AI.
+  rawAnalysis Json?
+
+  // Parallel analyzer outputs (apps/ai POST /v1/videos/analyze/{scene,copy,colour,subject}).
+  // Null for AUDIO media (no visual signal) or until that analyzer step completes.
+  sceneAnalysis   Json? // Gemini Vision: {frame_description, scene_and_object_read, layout, objects}
+  copyAnalysis    Json? // OCR module: {text, cta, script}
+  colourAnalysis  Json? // Color analyser: {palette, balance}
+  subjectAnalysis Json? // Face/subject: {placement, zone}
+
+  // Gemini sales engine output: {copy_corrections, roas, claim_safety}.
+  salesEngine Json?
+
+  // On-demand (not part of the automatic pipeline fan-out — see
+  // language-intelligence.service.ts — deliberately kept out of it to avoid
+  // a 5th Gemini call on every single video's analysis) South-Indian
+  // regional/city language-fit read: {cities: [{city, state, language,
+  // fitPct}], clusters: [{state, description}]}, replacing the flat 0.6
+  // regionalLanguage placeholder tribe-scoring.ts has used since Milestone 1
+  // (no real detector existed until now) wherever this is present. Null
+  // until a reviewer requests it for that video.
+  regionalFit Json?
+
+  // Assembled Report-Builder payload (approval score, meta ad score, ROAS,
+  // copy corrections, attention peak, next actions) — the "unified score
+  // JSON" from the whiteboard. Also snapshotted to
+  // D:\Creative-Intelligence\video-records\<videoId>.json when written.
+  unifiedScore Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  videoId String @unique
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+}
+
+// Real, ground-truth performance for a published video — the label data
+// `apps/ai/scripts/train_tribe_head.py` needs to calibrate the TRIBE head.
+// Entered by hand today (from YouTube Studio / Meta Insights, etc.); nothing
+// in this model is ever predicted or derived, only recorded.
+model VideoOutcome {
+  id String @id @default(cuid())
+
+  hookRate        Float? // actual share of viewers who stayed past 3s, 0-1
+  holdRate        Float? // actual completion rate, 0-1
+  conversionScore Float? // actual click/conversion rate, 0-1
+  source          String // e.g. "youtube_studio", "meta_insights", "manual"
+  notes           String? @db.Text
+
+  recordedAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  videoId String @unique
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+}
+
+// Approval Desk's "Language Mode" panel — a reviewer pastes the actual ad
+// copy/voiceover/overlay script (distinct from the pipeline's own
+// auto-OCR'd on-screen text) and gets it graded for spelling, grammar,
+// logic, and clarity via Gemini. User-editable/re-checkable (not a pipeline
+// step), so it's its own small table rather than another VideoAnalytics
+// column — re-pasting and re-checking just overwrites this one row.
+model CopyQualityCheck {
+  id String @id @default(cuid())
+
+  languageMode String @default("auto") // "auto" or a language code the reviewer pins
+  pastedCopy   String @db.Text
+
+  spellingScore Int? // 0-100, each null until a check has actually run
+  grammarScore  Int?
+  logicScore    Int?
+  clarityScore  Int?
+  findings      Json // string[] — empty array, not null, before any text is checked
+
+  checkedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  videoId String @unique
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+}
+
+enum PredictionKind {
+  ENGAGEMENT
+  HOOK
+  RETENTION
+  EMOTIONAL_IMPACT
+  CONVERSION
+  PLATFORM_COMPATIBILITY
+}
+
+model Prediction {
+  id         String         @id @default(cuid())
+  kind       PredictionKind
+  score      Float // normalized 0–100
+  confidence Float? // model confidence 0–1
+  breakdown  Json? // sub-metric detail (e.g. per-platform scores)
+  modelName  String // which model/version produced this
+  createdAt  DateTime       @default(now())
+
+  videoId String
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, kind])
+}
+
+enum RecommendationKind {
+  HOOK
+  CTA
+  CAPTIONS
+  PACING
+  THUMBNAIL
+  SCENE_ORDER
+}
+
+model Recommendation {
+  id        String             @id @default(cuid())
+  kind      RecommendationKind
+  title     String
+  body      String             @db.Text // the actual suggestion text
+  rationale String?            @db.Text // why the AI suggests it
+  priority  Int                @default(0) // higher = more impactful
+  applied   Boolean            @default(false)
+  createdAt DateTime           @default(now())
+
+  videoId String
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, kind])
+}
+
+// ─────────────────────────────────────────────
+// Processing jobs (BullMQ mirror for audit/UI)
+// ─────────────────────────────────────────────
+
+enum JobType {
+  PROBE
+  FRAME_EXTRACTION
+  AUDIO_EXTRACTION
+  TRANSCRIPTION
+  // The 4 parallel analyzers fanned out after frame-extraction/transcription
+  // (VIDEO/IMAGE only — AUDIO has no visual signal and skips straight to
+  // TRIBE_ANALYSIS). See PipelineStep in apps/api/src/jobs/pipeline.constants.ts.
+  VISION_ANALYSIS
+  OCR_ANALYSIS
+  COLOR_ANALYSIS
+  SUBJECT_ANALYSIS
+  // Scoring engine: combines the 4 analyzer outputs (or transcript alone for
+  // AUDIO) into pillar scores using live rule weights. Name kept from the
+  // original single-signal implementation to minimize churn elsewhere.
+  TRIBE_ANALYSIS
+  // Gemini sales engine: copy corrections, ROAS, claim safety — assembles
+  // VideoAnalytics.unifiedScore.
+  SALES_ENGINE
+  PREDICTION
+  RECOMMENDATION
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model ProcessingJob {
+  id          String    @id @default(cuid())
+  type        JobType
+  status      JobStatus @default(QUEUED)
+  progress    Int       @default(0) // 0–100
+  queueJobId  String? // BullMQ job id
+  error       String?   @db.Text
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  videoId String
+  video   Video  @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, status])
+  @@index([status, createdAt])
+}
+
+// ─────────────────────────────────────────────
+// Notifications & Chat
+// ─────────────────────────────────────────────
+
+enum NotificationType {
+  PROCESSING_COMPLETE
+  PROCESSING_FAILED
+  RECOMMENDATION_READY
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  type      NotificationType
+  title     String
+  body      String?          @db.Text
+  link      String? // in-app route to the subject
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  title     String   @default("New conversation")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  userId   String
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  role      ChatRole
+  content   String   @db.Text
+  // Videos/analytics the assistant grounded this answer in
+  citations Json?
+  createdAt DateTime @default(now())
+
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+// ─────────────────────────────────────────────
+// Billing
+// ─────────────────────────────────────────────
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  TRIALING
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  plan               SubscriptionPlan   @default(FREE)
+  status             SubscriptionStatus @default(TRIALING)
+  videoQuota         Int                @default(20) // analyses per month
+  videosUsed         Int                @default(0)
+  currentPeriodEnd   DateTime?
+  externalCustomerId String? // billing provider customer id
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  teamId String @unique
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+}

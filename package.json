@@ -1,0 +1,26 @@
+{
+  "name": "video-intelligence-platform",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI Video Performance Intelligence Platform — internal Digifyce product",
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace apps/web",
+    "dev:api": "npm run start:dev --workspace apps/api",
+    "dev:ai": "cd apps/ai && .venv\\Scripts\\python.exe -m uvicorn app.main:app --reload --port 8000",
+    "dev:auth": "cd apps/auth && .venv\\Scripts\\python.exe -m uvicorn app.main:app --reload --port 8001",
+    "build": "npm run build --workspaces --if-present",
+    "db:generate": "npm run generate --workspace packages/database",
+    "db:migrate": "npm run migrate:dev --workspace packages/database",
+    "db:studio": "npm run studio --workspace packages/database",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
